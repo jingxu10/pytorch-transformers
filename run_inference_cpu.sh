@@ -34,10 +34,11 @@ if [[ "$1" == "--single" ]]; then
   shift
 fi
 
-if [[ "$1" == "--mkldnn" ]]; then
-  echo "### using mkldnn"
-  ARGS="--mkldnn"
-fi
+ARGS=$@
+# if [[ "$1" == "--mkldnn" ]]; then
+#   echo "### using mkldnn"
+#   ARGS="--mkldnn"
+# fi
 
 export OMP_NUM_THREADS=$TOTAL_CORES
 export $KMP_SETTING
@@ -49,13 +50,15 @@ echo -e "### using ARGS=$ARGS\n"
 GLUE_DIR=./dataset/glue_data
 TASK_NAME=MRPC
 
-OUTPUT=${TASK_NAME}_output
+OUTPUT=./models/${TASK_NAME}
 if [[ -d "$OUTPUT" ]]; then
   echo "### using model file from $OUTPUT"
 else
   echo -e "\n### model file not found, run fune tune first!\n###  ./run_training_gpu.sh\n"
   exit
 fi
+
+echo $ARGS
 
 $PREFIX python ./examples/run_glue.py --model_type bert \
     --model_name_or_path bert-base-uncased \
@@ -66,6 +69,7 @@ $PREFIX python ./examples/run_glue.py --model_type bert \
     --max_seq_length 128 \
     --per_gpu_eval_batch_size $BATCH_SIZE \
     --no_cuda \
-    --output_dir $OUTPUT $ARGS
+    --output_dir $OUTPUT \
+	$ARGS
 
 echo -e "\n### samples/sec = batch_size * it/s\n### batch_size = $BATCH_SIZE"

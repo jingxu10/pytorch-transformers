@@ -22,6 +22,7 @@ import glob
 import logging
 import os
 import random
+import time
 
 import numpy as np
 import torch
@@ -217,6 +218,24 @@ def evaluate(args, model, tokenizer, prefix=""):
             model = mkldnn_utils.to_mkldnn(model)
             print(model)
 
+        if args.cached_weights:
+            for batch in tqdm(eval_dataloader, desc="Tracing"):
+                model.eval()
+                batch = tuple(t.to(args.device) for t in batch)
+
+                with torch.no_grad():
+                    # inputs = {'input_ids':      batch[0],
+                    #           'attention_mask': batch[1],
+                    #           'token_type_ids': batch[2] if args.model_type in ['bert', 'xlnet'] else None,  # XLM and RoBERTa don't use segment_ids
+                    #           'labels':         batch[3]}
+                    # traced = torch.jit.trace(model, **inputs, check_trace=False)
+                    traced = torch.jit.trace(model, (batch[0], batch[2], batch[1], batch[3]), check_trace=False)
+                    script = traced.save('jit_model.pt')
+                    break
+
+            model = torch.jit.load('jit_model.pt')
+        total_time = 0
+        num = 0
         for batch in tqdm(eval_dataloader, desc="Evaluating"):
             model.eval()
             batch = tuple(t.to(args.device) for t in batch)
@@ -226,7 +245,14 @@ def evaluate(args, model, tokenizer, prefix=""):
                           'attention_mask': batch[1],
                           'token_type_ids': batch[2] if args.model_type in ['bert', 'xlnet'] else None,  # XLM and RoBERTa don't use segment_ids
                           'labels':         batch[3]}
-                outputs = model(**inputs)
+                t0 = time.time()
+                if args.cached_weights:
+                    outputs = model(batch[0], batch[2], batch[1], batch[3])
+                else:
+                    outputs = model(**inputs)
+                if num > 50:
+                    total_time += time.time() - t0
+                num += 1
                 tmp_eval_loss, logits = outputs[:2]
 
                 eval_loss += tmp_eval_loss.mean().item()
@@ -237,6 +263,8 @@ def evaluate(args, model, tokenizer, prefix=""):
             else:
                 preds = np.append(preds, logits.detach().cpu().numpy(), axis=0)
                 out_label_ids = np.append(out_label_ids, inputs['labels'].detach().cpu().numpy(), axis=0)
+
+        print('{} batch/s'.format((num-50)/total_time))
 
         eval_loss = eval_loss / nb_eval_steps
         if args.output_mode == "classification":
@@ -276,7 +304,7 @@ def load_and_cache_examples(args, task, tokenizer, evaluate=False):
         label_list = processor.get_labels()
         if task in ['mnli', 'mnli-mm'] and args.model_type in ['roberta']:
             # HACK(label indices are swapped in RoBERTa pretrained model)
-            label_list[1], label_list[2] = label_list[2], label_list[1] 
+            label_list[1], label_list[2] = label_list[2], label_list[1]
         examples = processor.get_dev_examples(args.data_dir) if evaluate else processor.get_train_examples(args.data_dir)
         features = convert_examples_to_features(examples, label_list, args.max_seq_length, tokenizer, output_mode,
             cls_token_at_end=bool(args.model_type in ['xlnet']),            # xlnet has a cls token at the end
@@ -373,6 +401,8 @@ def main():
                         help="Avoid using CUDA when available")
     parser.add_argument("--mkldnn", action='store_true',
                         help="Use mkldnn")
+    parser.add_argument("--cached_weights", action='store_true',
+                        help="Cache MKLDNN model weights")
     parser.add_argument('--overwrite_output_dir', action='store_true',
                         help="Overwrite the content of the output directory")
     parser.add_argument('--overwrite_cache', action='store_true',
